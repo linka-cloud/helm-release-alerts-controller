@@ -149,7 +149,7 @@ func (r *HelmReleaseReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if _, err := r.API.Alert.PostAlerts(&alert.PostAlertsParams{Context: ctx, Alerts: models.PostableAlerts{createAlert(hr, cver, last)}}); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, nil
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 	var pa models.PostableAlerts
 	for _, v := range alerts.GetPayload() {
@@ -182,7 +182,7 @@ func (r *HelmReleaseReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 	if len(pa) == 0 {
 		log.Info("alert already exists")
-		return ctrl.Result{}, nil
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 	log.Info("updating alert", "current", cver.String(), "last", last.String())
 	if _, err := r.API.Alert.PostAlerts(&alert.PostAlertsParams{Context: ctx, Alerts: pa}); err != nil {
