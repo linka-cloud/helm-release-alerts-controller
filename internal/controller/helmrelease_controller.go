@@ -130,13 +130,29 @@ func (r *HelmReleaseReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, nil
 	}
 	last := cver
+	var (
+		aver  semver.Version
+		alast semver.Version
+	)
 	for _, v := range c {
 		ver, err := semver.ParseTolerant(v.Version)
 		if err != nil {
 			log.V(6).Info("non semver version, skipping", "version", v.Version)
+			continue
 		}
-		if ver.GT(last) {
+		if len(ver.Pre) != 0 {
+			continue
+		}
+		av, err := semver.ParseTolerant(v.AppVersion)
+		if err != nil {
+			log.V(6).Info("non semver app version, skipping", "version", v.AppVersion)
+		}
+		switch {
+		case ver.EQ(cver):
+			aver = av
+		case ver.GT(last):
 			last = ver
+			alast = av
 		}
 	}
 	if last.EQ(cver) {
@@ -146,39 +162,18 @@ func (r *HelmReleaseReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	log.Info("new version available", "current", cver.String(), "last", last.String())
 	if len(alerts.GetPayload()) == 0 {
 		log.V(6).Info("creating alert")
-		if _, err := r.API.Alert.PostAlerts(&alert.PostAlertsParams{Context: ctx, Alerts: models.PostableAlerts{createAlert(hr, cver, last)}}); err != nil {
+		if _, err := r.API.Alert.PostAlerts(&alert.PostAlertsParams{Context: ctx, Alerts: models.PostableAlerts{createAlert(hr, cver, last, aver, alast)}}); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 	var pa models.PostableAlerts
 	for _, v := range alerts.GetPayload() {
-		if v.Labels["current"] == cver.String() && v.Labels["last"] == last.String() {
+		if v.Labels["current"] == cver.String() && v.Labels["last"] == last.String() && (v.StartsAt != nil && time.Now().Before(time.Time(*v.StartsAt).Add(requeueAfter))) {
 			log.V(6).Info("alert up to date")
 			continue
 		}
-		a := models.PostableAlert{
-			StartsAt: strfmt.DateTime(time.Now()),
-			Annotations: map[string]string{
-				"summary": fmt.Sprintf("%s/%s %s: %s", hr.Namespace, hr.Name, fmt.Sprintf("New version available: %s", last), fmt.Sprintf("Current version: %s", cver)),
-			},
-			Alert: models.Alert{
-				Labels: models.LabelSet{
-					"alertname":  AlertName,
-					"severity":   AlertSeverity,
-					"apiVersion": hr.APIVersion,
-					"kind":       hr.Kind,
-					"namespace":  hr.Namespace,
-					"name":       hr.Name,
-					"current":    cver.String(),
-					"last":       last.String(),
-				},
-			},
-		}
-		o := a
-		o.Labels = v.Labels
-		o.EndsAt = strfmt.DateTime(time.Now())
-		pa = append(pa, &o, &a)
+		pa = append(pa, createAlert(hr, cver, last, aver, alast))
 	}
 	if len(pa) == 0 {
 		log.Info("alert already exists")
@@ -247,22 +242,24 @@ func getIndex(ctx context.Context, url string) (*repo.IndexFile, error) {
 	return &index, nil
 }
 
-func createAlert(hr helmv2.HelmRelease, current, last semver.Version) *models.PostableAlert {
+func createAlert(hr helmv2.HelmRelease, cver, clast, aver, alast semver.Version) *models.PostableAlert {
 	return &models.PostableAlert{
 		StartsAt: strfmt.DateTime(time.Now()),
 		Annotations: map[string]string{
-			"summary": fmt.Sprintf("%s/%s %s (%s)", hr.Namespace, hr.Name, fmt.Sprintf("New version available: %s", last), fmt.Sprintf("current version: %s", current)),
+			"summary": fmt.Sprintf("%s/%s New chart version available: %s (app: %s), Current chat version: %s (app: %s)", hr.Namespace, hr.Name, clast.String(), alast.String(), cver.String(), aver.String()),
 		},
 		Alert: models.Alert{
 			Labels: models.LabelSet{
-				"alertname":  AlertName,
-				"severity":   AlertSeverity,
-				"apiVersion": hr.APIVersion,
-				"kind":       hr.Kind,
-				"namespace":  hr.Namespace,
-				"name":       hr.Name,
-				"current":    current.String(),
-				"last":       last.String(),
+				"alertname":    AlertName,
+				"severity":     AlertSeverity,
+				"apiVersion":   hr.APIVersion,
+				"kind":         hr.Kind,
+				"namespace":    hr.Namespace,
+				"name":         hr.Name,
+				"chartCurrent": cver.String(),
+				"chartLast":    clast.String(),
+				"appCurrent":   aver.String(),
+				"appLast":      alast.String(),
 			},
 		},
 	}
